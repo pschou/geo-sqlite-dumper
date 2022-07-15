@@ -7,4 +7,5 @@ require (
 	github.com/mattn/go-runewidth v0.0.13 // indirect
 	github.com/pschou/go-params v0.0.0-20210609133738-22a17ad0381c
 	github.com/twpayne/go-geom v1.4.1
+	github.com/twpayne/go-kml v1.5.2
 )

@@ -14,4 +14,5 @@ github.com/rivo/uniseg
 github.com/twpayne/go-geom
 github.com/twpayne/go-geom/encoding/kml
 # github.com/twpayne/go-kml v1.5.2
+## explicit
 github.com/twpayne/go-kml
