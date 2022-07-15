@@ -40,7 +40,7 @@ func main() {
 
 	var sqlfileFolders []kml.Element
 
-	for _, f := range os.Args[1:] {
+	for _, f := range params.Args() {
 		func() { // Anonymous function to make sure the defer close will work
 			conn, err := sqlite3.Open(f)
 			if err != nil {
@@ -56,39 +56,76 @@ func main() {
 			}
 
 			var total_dist, total_alt float64
-			var start_time, end_time float64
+			var path_time []time.Time
 			var tableFolders []kml.Element
+			var eventFolders []kml.Element
 			var kml_coords []kml.Coordinate
 			var prev_kml_coord *kml.Coordinate
 			var tbl_name string
 
 			store_event := func() {
-				total_time := end_time - start_time
+				defer func() {
+					// When this function is returned, clear out the variables
+					total_dist, total_alt = 0, 0
+					prev_kml_coord = nil
+					kml_coords = []kml.Coordinate{}
+					path_time = []time.Time{}
+				}()
+
+				if len(kml_coords) == 0 {
+					return
+				}
 				total_pts := float64(len(kml_coords))
-				s_sec, s_dec := math.Modf(start_time)
-				s_time := time.Unix(int64(s_sec), int64(s_dec*(1e9)))
-				e_sec, e_dec := math.Modf(end_time)
-				e_time := time.Unix(int64(e_sec), int64(e_dec*(1e9)))
-				tableFolder := kml.Folder(
-					kml.Name(tbl_name),
-					kml.Placemark(
-						kml.Name("Path "+s_time.Format(time.RFC3339Nano)+" - "+e_time.Format(time.RFC3339Nano)),
-						kml.Description(fmt.Sprintf("Average {speed: %dm/s %dmph, altitude: %dm}", total_dist/total_time, total_dist/total_time*2.236936, total_alt/total_pts)),
-						kml.StyleURL("#yellowLineGreenPoly"),
-						kml.LineString(
-							kml.Extrude(true),
-							kml.Tessellate(true),
-							kml.AltitudeMode(kml.AltitudeModeAbsolute),
-							kml.Coordinates(kml_coords...)),
+				s_time := path_time[0]
+				e_time := path_time[len(path_time)-1]
+				var elements []kml.Element
+				altMode := kml.AltitudeModeAbsolute
+				if total_alt == 0 {
+					altMode = kml.AltitudeModeClampToGround
+				}
+				// Make path entry if more than one point is specified
+				if len(kml_coords) > 1 {
+					elements = append(elements,
+						kml.Placemark(
+							kml.Name("Path"),
+							kml.StyleURL("#yellowLineGreenPoly"),
+							kml.LineString(
+								kml.Extrude(true),
+								kml.Tessellate(true),
+								kml.AltitudeMode(altMode),
+								kml.Coordinates(kml_coords...)),
+						),
+					)
+				}
+
+				var pointElements []kml.Element
+				for i, kml_coord := range kml_coords {
+					pointElements = append(pointElements,
+						kml.Placemark(
+							kml.Name(path_time[i].Format(time.RFC3339Nano)),
+							kml.Point(kml.Coordinates(kml_coord)),
+						),
+					)
+				}
+				elements = append(elements, kml.Folder(
+					append([]kml.Element{
+						kml.Name("Points"),
+					},
+						pointElements...,
+					)...,
+				))
+
+				eventFolders = append(eventFolders,
+					kml.Folder(
+						append([]kml.Element{
+							kml.Name("Path " + s_time.Format(time.RFC3339Nano) + " - " + e_time.Format(time.RFC3339Nano)),
+							kml.Description(fmt.Sprintf("{time: %s, dist: %dm, altitude: %dm}", e_time.Sub(s_time), total_dist, total_alt/total_pts)),
+						},
+							elements...,
+						)...,
 					),
 				)
-				tableFolders = append(tableFolders, tableFolder)
 
-				total_dist, total_alt = 0, 0
-				start_time, end_time = 0, 0
-				tableFolders = []kml.Element{}
-				kml_coords = []kml.Coordinate{}
-				prev_kml_coord = nil
 			}
 
 			for _, tbl_name = range tbl_names {
@@ -141,6 +178,7 @@ func main() {
 					log.Fatalf("failed to select data from table: %v", err)
 				}
 				defer stmt.Close()
+				count := 0
 
 				for {
 					hasRow, err := stmt.Step()
@@ -150,6 +188,7 @@ func main() {
 					if !hasRow {
 						break
 					}
+					count++
 
 					/*
 						// Use Scan to access column data from a row
@@ -163,21 +202,19 @@ func main() {
 
 					if len(idate) > 0 {
 						cur_time, _, _ := stmt.ColumnDouble(idate[0])
-						if start_time == 0 {
-							start_time, end_time = cur_time, cur_time
-						} else if cur_time-start_time > 600 {
+						c_sec, c_dec := math.Modf(cur_time)
+						c_time := time.Unix(int64(c_sec+978307200), int64(c_dec+1e9))
+						if len(path_time) > 0 && c_time.Sub(path_time[len(path_time)-1]) > 10*time.Minute {
 							store_event()
-							start_time, end_time = cur_time, cur_time
-						} else {
-							end_time = cur_time
 						}
+						path_time = append(path_time, c_time)
 					}
 
 					lat, ok, err := stmt.ColumnDouble(ilat[0])
 					if *debug && (!ok || err != nil) {
 						log.Println("nil long", err)
 					}
-					long, ok, err := stmt.ColumnDouble(ilat[0])
+					long, ok, err := stmt.ColumnDouble(ilong[0])
 					if *debug && (!ok || err != nil) {
 						log.Println("nil lat", err)
 					}
@@ -200,7 +237,7 @@ func main() {
 						}
 					}
 					kml_coords = append(kml_coords, kml_coord)
-					if prev_kml_coord == nil {
+					if prev_kml_coord != nil {
 						// Center point for altitude
 						r1 := EarthRadius(prev_kml_coord.Lat)
 						r2 := EarthRadius(kml_coord.Lat)
@@ -221,6 +258,15 @@ func main() {
 				}
 
 				store_event()
+
+				tableFolders = append(tableFolders, kml.Folder(
+					append([]kml.Element{
+						kml.Name(fmt.Sprintf("%s (%d)", tbl_name, count)),
+						kml.Open(false),
+					},
+						tableFolders...,
+					)...,
+				))
 
 			}
 			sqlfileFolders = append(sqlfileFolders, kml.Folder(
