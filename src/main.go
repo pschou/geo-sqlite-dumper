@@ -25,9 +25,7 @@ import (
 	"github.com/twpayne/go-kml"
 )
 
-var debug, open_file *bool
-var name *string
-var event *time.Duration
+var debug *bool
 var version = ""
 
 func main() {
@@ -39,9 +37,11 @@ func main() {
 		params.PrintDefaults()
 	}
 	debug = params.Pres("debug", "Verbose output")
-	event = params.Duration("event", 10*time.Minute, "Event qualifier, time between events to split on", "TIME")
-	name = params.String("name", "sqlite2kml", "Name to use for base KML folder", "TEXT")
-	open_file = params.Bool("open-file", false, "Open all the file-named-folders when KML is loaded", "TRUE/FALSE")
+	event := params.Duration("e event", 10*time.Minute, "Event qualifier, time between events to split on", "TIME")
+	busy_timeout := params.Duration("timeout", 10*time.Second, "Busy timeout for SQLite calls", "TIME")
+	name := params.String("N name", "sqlite2kml", "Name to use for base KML folder", "TEXT")
+	qry := params.String("q query", "", "Custom query for SQLite", "SQL")
+	open_file := params.Bool("open-file", false, "Open all the file-named-folders when KML is loaded", "BOOL")
 	params.CommandLine.Indent = 2
 	params.Parse()
 
@@ -56,8 +56,14 @@ func main() {
 			defer conn.Close()
 
 			// It's always a good idea to set a busy timeout
-			conn.BusyTimeout(5 * time.Second)
-			tbl_names, err := getTables(conn)
+			conn.BusyTimeout(*busy_timeout)
+
+			// If no query is specified, dump all tables to file
+			tbl_names := []string{""}
+			if *qry == "" {
+				tbl_names, err = getTables(conn)
+			}
+
 			if err != nil {
 				panic(err)
 			}
@@ -147,173 +153,222 @@ func main() {
 
 			}
 
+			// Loop over all the tables found in database, or call custom query
 			for _, tbl_name = range tbl_names {
-				// Ensure the variables are cleared on new table
-				total_dist, total_alt = 0, 0
-				prev_kml_coord = nil
-				kml_coords = []kml.Coordinate{}
-				path_time = []time.Time{}
+				func() { // Anonymous function to ensure the defer will close the statement as needed
+					// Ensure the variables are cleared on new table
+					total_dist, total_alt = 0, 0
+					prev_kml_coord = nil
+					kml_coords = []kml.Coordinate{}
+					path_time = []time.Time{}
 
-				if *debug {
-					log.Println("Table", tbl_name)
-				}
-				clm_names, err := getColumns(conn, tbl_name)
-				if err != nil {
-					panic(err)
-				}
-				if *debug {
-					log.Println("cols:", clm_names)
-				}
+					if *debug {
+						log.Println("Table", tbl_name)
+					}
 
-				//var long, lat, alt, date []string
-				var ilong, ilat, ialt, idate []int
-				for i, col := range clm_names {
-					lcol := strings.ToLower(col)
-					switch {
-					case strings.HasSuffix(lcol, "latitude"):
-						//lat = append(lat, col)
-						ilat = append(ilat, i)
-					case strings.HasSuffix(lcol, "longitude"):
-						//long = append(long, col)
-						ilong = append(ilong, i)
-					case strings.HasSuffix(lcol, "altitude"):
-						//alt = append(alt, col)
-						ialt = append(ialt, i)
-					case strings.HasSuffix(lcol, "date"):
-						if strings.HasSuffix(lcol, "creationdate") {
-							idate = append([]int{i}, idate...)
+					var stmt *sqlite3.Stmt
+					if *qry == "" {
+						clm_names, err := getColumns(conn, tbl_name)
+						if err != nil {
+							panic(err)
+						}
+
+						var idate, idate_top []int
+						for i, col := range clm_names {
+							lcol := strings.ToLower(col)
+							if strings.HasSuffix(lcol, "date") {
+								switch {
+								case strings.HasSuffix(lcol, "creationdate"):
+									idate_top = append(idate_top, i)
+								case strings.HasSuffix(lcol, "startdate"):
+									idate_top = append([]int{i}, idate_top...)
+								default:
+									//date = append(date, col)
+									idate = append(idate, i)
+								}
+							}
+						}
+						idate = append(idate_top, idate...)
+
+						sel_tbl := `SELECT * FROM ` + tbl_name
+						sel_prefix := ""
+
+						if strings.HasSuffix(tbl_name, "TRANSITIONMO") && contains(tbl_names, strings.TrimSuffix(tbl_name, "TRANSITIONMO")+"MO") {
+							join_tbl := strings.TrimSuffix(tbl_name, "TRANSITIONMO") + "MO"
+							sel_tbl = `SELECT * FROM ` + tbl_name + ` AS a LEFT JOIN ` + join_tbl + ` AS b ON a.ZLOCATIONOFINTEREST = b.Z_PK`
+							sel_prefix = "a."
+						}
+
+						// Prepare an SQL statement for data parsing
+						if len(idate) > 0 {
+							stmt, err = conn.Prepare(sel_tbl + ` ORDER BY ` + sel_prefix + clm_names[idate[0]])
 						} else {
-							//date = append(date, col)
-							idate = append(idate, i)
+							stmt, err = conn.Prepare(sel_tbl)
 						}
-					}
-				}
-
-				if !(len(ilong) > 0 && len(ilat) > 0) {
-					if *debug {
-						log.Println("Missing lat or long in file")
-					}
-					continue
-				}
-
-				// Prepare can prepare a statement and optionally also bind arguments
-				var stmt *sqlite3.Stmt
-				if len(idate) > 0 {
-					stmt, err = conn.Prepare(`SELECT * FROM ` + tbl_name + ` ORDER BY ` + clm_names[idate[0]])
-				} else {
-					stmt, err = conn.Prepare(`SELECT * FROM ` + tbl_name)
-				}
-				if err != nil {
-					log.Fatalf("failed to select data from table: %v", err)
-				}
-				defer stmt.Close()
-				count := 0
-
-				for {
-					hasRow, err := stmt.Step()
-					if err != nil {
-						log.Fatalf("step failed while querying data: %v", err)
-					}
-					if !hasRow {
-						break
-					}
-					count++
-
-					/*
-						// Use Scan to access column data from a row
-						data := make([]interface{}, len(clm_names))
-						var pdata []interface{}
-						for i := range data {
-							pdata = append(pdata, &data[i])
-						}
-						err = stmt.Scan(pdata...)*/
-					var kml_coord kml.Coordinate
-					var cur_time float64
-					var c_time time.Time
-
-					if len(idate) > 0 {
-						cur_time, _, _ = stmt.ColumnDouble(idate[0])
-						c_sec, c_dec := math.Modf(cur_time)
-						c_time = time.Unix(int64(c_sec)+978307200, int64(c_dec+1e9))
-						if len(path_time) > 0 && c_time.Sub(path_time[len(path_time)-1]) > *event {
-							store_event()
-						}
-						path_time = append(path_time, c_time)
-					}
-
-					lat, ok, err := stmt.ColumnDouble(ilat[0])
-					if *debug && (!ok || err != nil) {
-						log.Println("nil long", err)
-					}
-					long, ok, err := stmt.ColumnDouble(ilong[0])
-					if *debug && (!ok || err != nil) {
-						log.Println("nil lat", err)
-					}
-					if len(ialt) > 0 {
-						alt, ok, err := stmt.ColumnDouble(ilat[0])
-						if *debug && (!ok || err != nil) {
-							log.Println("nil alt", err)
-						}
-						kml_coord = kml.Coordinate{
-							Lon: long,
-							Lat: lat,
-							Alt: alt,
-						}
-						total_alt += alt
 					} else {
-						kml_coord = kml.Coordinate{
-							Lon: long,
-							Lat: lat,
-							Alt: 0,
-						}
+						stmt, err = conn.Prepare(*qry)
+					}
+					if err != nil {
+						log.Fatalf("failed to select data from table: %v", err)
+					}
+					defer stmt.Close()
+
+					clm_names := stmt.ColumnNames()
+					if err != nil {
+						panic(err)
 					}
 					if *debug {
-						log.Println("point: ", kml_coord, "@", cur_time, "/", c_time)
+						log.Println("cols:", clm_names)
 					}
-					kml_coords = append(kml_coords, kml_coord)
-					if prev_kml_coord != nil {
-						// Center point for altitude
-						r1 := EarthRadius(prev_kml_coord.Lat)
-						r2 := EarthRadius(kml_coord.Lat)
-						arc := ArcDistance(
-							prev_kml_coord.Lat, prev_kml_coord.Lon,
-							kml_coord.Lat, kml_coord.Lon,
-						)
-						// Using a first order cartesian approximation, and not the
-						// incomplete elliptic intergral:
-						total_dist += math.Sqrt(Sq(r1+prev_kml_coord.Alt-r2-kml_coord.Alt) +
-							Sq(arc*(r1+prev_kml_coord.Alt+r2+kml_coord.Alt)/2))
+
+					//var long, lat, alt, date []string
+					var ilong, ilat, ialt, idate, idate_top []int
+					for i, col := range clm_names {
+						lcol := strings.ToLower(col)
+						switch {
+						case strings.HasSuffix(lcol, "latitude"):
+							//lat = append(lat, col)
+							ilat = append(ilat, i)
+						case strings.HasSuffix(lcol, "longitude"):
+							//long = append(long, col)
+							ilong = append(ilong, i)
+						case strings.HasSuffix(lcol, "altitude"):
+							//alt = append(alt, col)
+							ialt = append(ialt, i)
+						case strings.HasSuffix(lcol, "date"):
+							switch {
+							case strings.HasSuffix(lcol, "creationdate"):
+								idate_top = append(idate_top, i)
+							case strings.HasSuffix(lcol, "startdate"):
+								idate_top = append([]int{i}, idate_top...)
+							default:
+								//date = append(date, col)
+								idate = append(idate, i)
+							}
+						}
 					}
-					prev_kml_coord = &kml_coord
 
-					if err != nil {
-						log.Fatalf("scan failed while querying data: %v", err)
+					idate = append(idate_top, idate...)
+
+					if !(len(ilong) > 0 && len(ilat) > 0) {
+						if *debug {
+							log.Println("Missing lat or long in file")
+						}
+						return
 					}
-				}
 
-				if len(path_time) > 0 {
-					store_event()
-				}
+					count := 0
 
-				tableFolders = append(tableFolders, kml.Folder(
+					for {
+						hasRow, err := stmt.Step()
+						if err != nil {
+							log.Fatalf("step failed while querying data: %v", err)
+						}
+						if !hasRow {
+							break
+						}
+						count++
+
+						/*
+							// Use Scan to access column data from a row
+							data := make([]interface{}, len(clm_names))
+							var pdata []interface{}
+							for i := range data {
+								pdata = append(pdata, &data[i])
+							}
+							err = stmt.Scan(pdata...)*/
+						var kml_coord kml.Coordinate
+						var cur_time float64
+						var c_time time.Time
+
+						if len(idate) > 0 {
+							cur_time, _, _ = stmt.ColumnDouble(idate[0])
+							c_sec, c_dec := math.Modf(cur_time)
+							c_time = time.Unix(int64(c_sec)+978307200, int64(c_dec+1e9))
+							if len(path_time) > 0 && c_time.Sub(path_time[len(path_time)-1]) > *event {
+								store_event()
+							}
+							path_time = append(path_time, c_time)
+						}
+
+						lat, ok, err := stmt.ColumnDouble(ilat[0])
+						if *debug && (!ok || err != nil) {
+							log.Println("nil long", err)
+						}
+						long, ok, err := stmt.ColumnDouble(ilong[0])
+						if *debug && (!ok || err != nil) {
+							log.Println("nil lat", err)
+						}
+						if len(ialt) > 0 {
+							alt, ok, err := stmt.ColumnDouble(ilat[0])
+							if *debug && (!ok || err != nil) {
+								log.Println("nil alt", err)
+							}
+							kml_coord = kml.Coordinate{
+								Lon: long,
+								Lat: lat,
+								Alt: alt,
+							}
+							total_alt += alt
+						} else {
+							kml_coord = kml.Coordinate{
+								Lon: long,
+								Lat: lat,
+								Alt: 0,
+							}
+						}
+						if *debug {
+							log.Println("point: ", kml_coord, "@", cur_time, "/", c_time)
+						}
+						kml_coords = append(kml_coords, kml_coord)
+						if prev_kml_coord != nil {
+							// Center point for altitude
+							r1 := EarthRadius(prev_kml_coord.Lat)
+							r2 := EarthRadius(kml_coord.Lat)
+							arc := ArcDistance(
+								prev_kml_coord.Lat, prev_kml_coord.Lon,
+								kml_coord.Lat, kml_coord.Lon,
+							)
+							// Using a first order cartesian approximation, and not the
+							// incomplete elliptic intergral:
+							total_dist += math.Sqrt(Sq(r1+prev_kml_coord.Alt-r2-kml_coord.Alt) +
+								Sq(arc*(r1+prev_kml_coord.Alt+r2+kml_coord.Alt)/2))
+						}
+						prev_kml_coord = &kml_coord
+
+						if err != nil {
+							log.Fatalf("scan failed while querying data: %v", err)
+						}
+					}
+
+					if len(path_time) > 0 {
+						store_event()
+					}
+
+					tableFolders = append(tableFolders, kml.Folder(
+						append([]kml.Element{
+							kml.Name(fmt.Sprintf("%s (%d)", tbl_name, count)),
+							kml.Open(false),
+						},
+							eventFolders...,
+						)...,
+					))
+					eventFolders = []kml.Element{}
+
+				}()
+			}
+			if *qry == "" {
+				sqlfileFolders = append(sqlfileFolders, kml.Folder(
 					append([]kml.Element{
-						kml.Name(fmt.Sprintf("%s (%d)", tbl_name, count)),
-						kml.Open(false),
+						kml.Name(f),
+						kml.Open(*open_file),
 					},
-						eventFolders...,
+						tableFolders...,
 					)...,
 				))
-				eventFolders = []kml.Element{}
-
+			} else {
+				sqlfileFolders = tableFolders
 			}
-			sqlfileFolders = append(sqlfileFolders, kml.Folder(
-				append([]kml.Element{
-					kml.Name(f),
-					kml.Open(*open_file),
-				},
-					tableFolders...,
-				)...,
-			))
 		}()
 	}
 
@@ -321,6 +376,7 @@ func main() {
 		kml.Document(
 			append([]kml.Element{
 				kml.Name(*name),
+				kml.Description("Built using sqlite2kml, https://github.com/pschou/sqlite2kml"),
 				kml.Open(true),
 			},
 				sqlfileFolders...,
