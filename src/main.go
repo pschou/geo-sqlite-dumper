@@ -13,6 +13,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -73,6 +74,7 @@ func main() {
 			var tableFolders []kml.Element
 			var eventFolders []kml.Element
 			var kml_coords []kml.Coordinate
+			var kml_desc []*kml.SimpleElement
 			var prev_kml_coord *kml.Coordinate
 			var tbl_name string
 
@@ -102,7 +104,7 @@ func main() {
 					altMode = kml.AltitudeModeClampToGround
 				}
 				// Create a path if more than one point is specified
-				if len(kml_coords) > 1 {
+				if len(kml_coords) > 1 && !strings.HasSuffix(tbl_name, "OFINTERESTMO") {
 					elements = append(elements,
 						kml.Placemark(
 							kml.Name("Path"),
@@ -269,14 +271,19 @@ func main() {
 						}
 						count++
 
-						/*
-							// Use Scan to access column data from a row
-							data := make([]interface{}, len(clm_names))
-							var pdata []interface{}
-							for i := range data {
-								pdata = append(pdata, &data[i])
-							}
-							err = stmt.Scan(pdata...)*/
+						// Use Scan to access column data from a row
+						data := make([]interface{}, len(clm_names))
+						var ptr_data []interface{}
+						for i := range data {
+							ptr_data = append(ptr_data, &data[i])
+						}
+						err = stmt.Scan(ptr_data...)
+						desc := fmt.Sprintf("i: %d", count)
+						for icol, clm_name := range clm_names {
+							strB, _ := json.Marshal(data[icol])
+							desc += ",\n" + clm_name + ": " + string(strB)
+						}
+
 						var kml_coord kml.Coordinate
 						var cur_time float64
 						var c_time time.Time
@@ -321,6 +328,7 @@ func main() {
 							log.Println("point: ", kml_coord, "@", cur_time, "/", c_time)
 						}
 						kml_coords = append(kml_coords, kml_coord)
+						kml_desc = append(kml_desc, kml.Description(desc))
 						if prev_kml_coord != nil {
 							// Center point for altitude
 							r1 := EarthRadius(prev_kml_coord.Lat)
