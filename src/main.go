@@ -38,7 +38,7 @@ func main() {
 		params.PrintDefaults()
 	}
 	debug = params.Pres("debug", "Verbose output")
-	event := params.Duration("e event", 10*time.Minute, "Event qualifier, time between events to split on", "TIME")
+	event := params.Duration("e event", 2*time.Hour, "Event qualifier, time between events to split on", "TIME")
 	busy_timeout := params.Duration("timeout", 10*time.Second, "Busy timeout for SQLite calls", "TIME")
 	name := params.String("N name", "sqlite2kml", "Name to use for base KML folder", "TEXT")
 	qry := params.String("q query", "", "Custom query for SQLite", "SQL")
@@ -166,6 +166,7 @@ func main() {
 					prev_kml_coord = nil
 					kml_coords = []kml.Coordinate{}
 					path_time = []time.Time{}
+					desc_top := ""
 
 					if *debug {
 						log.Println("Table", tbl_name)
@@ -200,6 +201,7 @@ func main() {
 
 						if strings.HasSuffix(tbl_name, "TRANSITIONMO") && contains(tbl_names, strings.TrimSuffix(tbl_name, "TRANSITIONMO")+"MO") {
 							join_tbl := strings.TrimSuffix(tbl_name, "TRANSITIONMO") + "MO"
+							desc_top = "Table " + tbl_name + " left joined with " + join_tbl + "\n"
 							sel_tbl = `SELECT * FROM ` + tbl_name + ` AS a LEFT JOIN ` + join_tbl + ` AS b ON a.ZLOCATIONOFINTEREST = b.Z_PK`
 							sel_prefix = "a."
 						}
@@ -282,9 +284,17 @@ func main() {
 						}
 						err = stmt.Scan(ptr_data...)
 						desc := fmt.Sprintf("i: %d", count)
+						if desc_top != "" {
+							desc = desc_top + desc
+						}
 						for icol, clm_name := range clm_names {
 							strB, _ := json.Marshal(data[icol])
 							desc += ",\n" + clm_name + ": " + string(strB)
+							if val, ok := data[icol].(float64); ok && strings.HasSuffix(strings.ToLower(clm_name), "date") {
+								v_sec, v_dec := math.Modf(val)
+								v_time := time.Unix(int64(v_sec)+978307200, int64(v_dec+1e9))
+								desc += fmt.Sprintf("(%s)", v_time)
+							}
 						}
 
 						var kml_coord kml.Coordinate
