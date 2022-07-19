@@ -66,7 +66,8 @@ func main() {
 			}
 
 			if err != nil {
-				panic(err)
+				fmt.Println("Make sure the file is in SQLite file format")
+				//panic(err)
 			}
 
 			var total_dist, total_alt float64
@@ -85,6 +86,7 @@ func main() {
 					total_dist, total_alt = 0, 0
 					prev_kml_coord = nil
 					kml_coords = []kml.Coordinate{}
+					kml_desc = []*kml.SimpleElement{}
 					path_time = []time.Time{}
 				}()
 
@@ -123,6 +125,7 @@ func main() {
 					pointElements = append(pointElements,
 						kml.Placemark(
 							kml.Name(path_time[i].Format(time.RFC3339Nano)),
+							kml_desc[i],
 							kml.Point(kml.Coordinates(kml_coord)),
 						),
 					)
