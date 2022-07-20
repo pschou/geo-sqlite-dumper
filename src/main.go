@@ -42,10 +42,13 @@ func main() {
 	debug = params.Pres("debug", "Verbose output")
 	event := params.Duration("e event", 2*time.Hour, "Event qualifier, time between events to split on", "TIME")
 	busy_timeout := params.Duration("timeout", 10*time.Second, "Busy timeout for SQLite calls", "TIME")
+	qry := params.String("q query", "", "Custom query for SQLite", "SQL")
+
+	params.GroupingSet("KML")
 	name := params.String("N name", "geo-sqlite-dumper", "Name to use for base KML folder", "TEXT")
 	kml_file := params.String("kml", "", "Export to KML file", "FILENAME")
+	params.GroupingSet("CSV")
 	csv_file := params.String("csv", "", "Export to CSV file", "FILENAME")
-	qry := params.String("q query", "", "Custom query for SQLite", "SQL")
 	params.CommandLine.Indent = 2
 	params.Parse()
 
