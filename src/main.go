@@ -34,7 +34,7 @@ var version = ""
 func main() {
 
 	params.Usage = func() {
-		fmt.Fprintf(os.Stderr, "geo-sqlite-dumper - Tool to view the contents of a sqlite file (github.com/pschou/geo-sqlite-dumper)\n"+
+		fmt.Fprintf(os.Stderr, "geo-sqlite-dumper - Tool to view the contents of a geo sqlite file (github.com/pschou/geo-sqlite-dumper)\n"+
 			"Apache 2.0 license, provided AS-IS -- not responsible for loss.\nUsage implies agreement.  Version: %s\n\n"+
 			"Usage: %s [options...] [files...]\n\n", version, os.Args[0])
 		params.PrintDefaults()
