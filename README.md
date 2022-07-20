@@ -1,13 +1,13 @@
 # geo-sqlite-dumper
 
-Tool to convert sqlite files into KML / CSV files for plotting coordinates on a map.
+Tool to convert geo sqlite files into KML / CSV files for plotting coordinates on a map.
 
 
 ## Usage:
 
 ```
 $ ./geo-sqlite-dumper -h
-geo-sqlite-dumper - Tool to view the contents of a sqlite file (github.com/pschou/geo-sqlite-dumper)
+geo-sqlite-dumper - Tool to view the contents of a geo sqlite file (github.com/pschou/geo-sqlite-dumper)
 Apache 2.0 license, provided AS-IS -- not responsible for loss.
 Usage implies agreement.  Version: 0.1.20220720.1213
 
