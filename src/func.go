@@ -27,7 +27,7 @@ func find(s []string, str string) (int, bool) {
 }
 
 type entry struct {
-	coords kml.Coordinate
+	coords *kml.Coordinate
 	desc   *kml.SimpleElement
 	data   map[string]string
 	id     int
@@ -38,7 +38,7 @@ type entry struct {
 // build a slice with all the coordinates
 func coords(elms []*entry) (ret []kml.Coordinate) {
 	for _, e := range elms {
-		ret = append(ret, e.coords)
+		ret = append(ret, *e.coords)
 	}
 	return ret
 }

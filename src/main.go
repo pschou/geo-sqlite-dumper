@@ -162,13 +162,15 @@ func main() {
 
 				var pointElements []kml.Element
 				for _, entry := range entries {
-					pointElements = append(pointElements,
-						kml.Placemark(
-							kml.Name(entry.time.Format(time.RFC3339Nano)),
-							entry.desc,
-							kml.Point(kml.Coordinates(entry.coords)),
-						),
-					)
+					if entry.coords != nil {
+						pointElements = append(pointElements,
+							kml.Placemark(
+								kml.Name(entry.time.Format(time.RFC3339Nano)),
+								entry.desc,
+								kml.Point(kml.Coordinates(*entry.coords)),
+							),
+						)
+					}
 				}
 				elements = append(elements, kml.Folder(
 					append([]kml.Element{
@@ -229,7 +231,7 @@ func main() {
 						var idate, idate_top []int
 						for i, col := range clm_names {
 							lcol := strings.ToLower(col)
-							if strings.HasSuffix(lcol, "date") {
+							if strings.HasSuffix(lcol, "date") || strings.HasSuffix(lcol, "timestamp") {
 								switch {
 								case strings.HasSuffix(lcol, "entrydate"):
 									idate_top = append(idate_top, i)
@@ -314,10 +316,6 @@ func main() {
 								idate = append(idate, i)
 							}
 						}
-						// fill up the all_clm_names for csv headers
-						if !contains(all_clm_names, clm_name) {
-							all_clm_names = append(all_clm_names, clm_name)
-						}
 					}
 
 					idate = append(idate_top, idate...)
@@ -358,15 +356,31 @@ func main() {
 						data_map := make(map[string]string)
 
 						{ // Store the file path in the csv output
-							data_map["SOURCE_FILE_PATH"] = f
-							all_clm_names = append(all_clm_names, "SOURCE_FILE_PATH")
-							all_clm_names_used["SOURCE_FILE_PATH"] = true
+							data_map["SOURCE_FILE_PATH"] = fmt.Sprintf("%q", f)
+							if !contains(all_clm_names, "SOURCE_FILE_PATH") {
+								all_clm_names = append(all_clm_names, "SOURCE_FILE_PATH")
+								all_clm_names_used["SOURCE_FILE_PATH"] = true
+							}
+						}
+
+						{ // Store the table name in the csv output
+							data_map["SOURCE_TABLE"] = fmt.Sprintf("%q", tbl_name)
+							if !contains(all_clm_names, "SOURCE_TABLE") {
+								all_clm_names = append(all_clm_names, "SOURCE_TABLE")
+								all_clm_names_used["SOURCE_TABLE"] = true
+							}
 						}
 
 						for icol, clm_name := range clm_names {
 							if data[icol] == nil {
 								continue
 							}
+
+							// fill up the all_clm_names for csv headers
+							if !contains(all_clm_names, clm_name) {
+								all_clm_names = append(all_clm_names, clm_name)
+							}
+
 							if _, ok := data_map[clm_name]; ok {
 								// don't overwrite values, useful when two tables are left joined
 								continue
@@ -375,7 +389,7 @@ func main() {
 							all_clm_names_used[clm_name] = true
 							var data_str, data_suffix string
 							switch val := data[icol].(type) {
-							case int:
+							case int, int64:
 								data_str = fmt.Sprintf("%d", val)
 							case float64:
 								if strings.HasSuffix(strings.ToLower(clm_name), "date") ||
@@ -384,12 +398,20 @@ func main() {
 									v_time := time.Unix(int64(v_sec)+978307200, int64(v_dec+1e9))
 									data_suffix = fmt.Sprintf(" (%s)", v_time)
 									data_map[clm_name+"_PARSED"] = v_time.Format("2006-01-02 15:04:05")
+									if !contains(all_clm_names, clm_name+"_PARSED") {
+										all_clm_names = append(all_clm_names, clm_name+"_PARSED")
+										all_clm_names_used[clm_name+"_PARSED"] = true
+									}
 								}
 								data_str = fmt.Sprintf("%f", val)
 							case string:
 								data_str = strconv.Quote(val)
+							case []uint8:
+								data_str = strconv.Quote(string(val))
 							default:
-								fmt.Printf("type: %T\n", val)
+								if *debug {
+									fmt.Printf("%s type: %T %q\n", clm_name, val, val)
+								}
 								strB, _ := json.Marshal(val)
 								data_str = string(strB)
 							}
@@ -399,7 +421,7 @@ func main() {
 							desc += ",\n" + clm_name + ": " + data_str + data_suffix
 						}
 
-						var kml_coord kml.Coordinate
+						var kml_coord *kml.Coordinate
 						var cur_time float64
 						var c_time time.Time
 
@@ -412,30 +434,38 @@ func main() {
 							}
 						}
 
+						loc_ok := true
+
 						lat, ok, err := stmt.ColumnDouble(ilat[0])
+						loc_ok = loc_ok && ok && err == nil
 						if *debug && (!ok || err != nil) {
 							log.Println("nil long", err)
 						}
+
 						long, ok, err := stmt.ColumnDouble(ilong[0])
+						loc_ok = loc_ok && ok && err == nil
 						if *debug && (!ok || err != nil) {
 							log.Println("nil lat", err)
 						}
-						if len(ialt) > 0 {
-							alt, ok, err := stmt.ColumnDouble(ilat[0])
-							if *debug && (!ok || err != nil) {
-								log.Println("nil alt", err)
-							}
-							kml_coord = kml.Coordinate{
-								Lon: long,
-								Lat: lat,
-								Alt: alt,
-							}
-							total_alt += alt
-						} else {
-							kml_coord = kml.Coordinate{
-								Lon: long,
-								Lat: lat,
-								Alt: 0,
+
+						if loc_ok {
+							if len(ialt) > 0 {
+								alt, ok, err := stmt.ColumnDouble(ilat[0])
+								if *debug && (!ok || err != nil) {
+									log.Println("nil alt", err)
+								}
+								kml_coord = &kml.Coordinate{
+									Lon: long,
+									Lat: lat,
+									Alt: alt,
+								}
+								total_alt += alt
+							} else {
+								kml_coord = &kml.Coordinate{
+									Lon: long,
+									Lat: lat,
+									Alt: 0,
+								}
 							}
 						}
 						if *debug {
@@ -467,7 +497,7 @@ func main() {
 						if !joined {
 							all_entries = append(all_entries, &c_entry)
 						}
-						if prev_kml_coord != nil {
+						if prev_kml_coord != nil && kml_coord != nil {
 							// Center point for altitude
 							r1 := EarthRadius(prev_kml_coord.Lat)
 							r2 := EarthRadius(kml_coord.Lat)
@@ -480,7 +510,7 @@ func main() {
 							total_dist += math.Sqrt(Sq(r1+prev_kml_coord.Alt-r2-kml_coord.Alt) +
 								Sq(arc*(r1+prev_kml_coord.Alt+r2+kml_coord.Alt)/2))
 						}
-						prev_kml_coord = &kml_coord
+						prev_kml_coord = kml_coord
 
 						if err != nil {
 							log.Fatalf("scan failed while querying data: %v", err)
