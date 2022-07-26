@@ -19,11 +19,11 @@ import (
 	"log"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bvinc/go-sqlite-lite/sqlite3"
-	"github.com/gocarina/gocsv"
 	"github.com/pschou/go-params"
 	"github.com/twpayne/go-kml"
 )
@@ -40,7 +40,8 @@ func main() {
 		params.PrintDefaults()
 	}
 	debug = params.Pres("debug", "Verbose output")
-	event := params.Duration("e event", 2*time.Hour, "Event qualifier, time between events to split on", "TIME")
+	event_time := params.Duration("e event-time", 2*time.Hour, "Event qualifier, time between events to split on", "TIME")
+	event_bool := params.Pres("E show-event-lines", "Show event lines for a series of points within event-time")
 	busy_timeout := params.Duration("timeout", 10*time.Second, "Busy timeout for SQLite calls", "TIME")
 	qry := params.String("q query", "", "Custom query for SQLite", "SQL")
 
@@ -70,8 +71,10 @@ func main() {
 		}
 		defer kmlf.Close()
 	}
+
 	var sqlfileFolders []kml.Element
 	var all_clm_names []string
+	all_clm_names_used := make(map[string]bool)
 	var all_entries []*entry
 
 	// Loop over the file names and load them into the sqlfileFolders slice
@@ -79,7 +82,18 @@ func main() {
 		func() {
 			// Anonymous function to make sure the defer close will work after every file
 			// is done processing
-			conn, err := sqlite3.Open(f)
+			ef := ""
+			for _, c := range []byte(f) {
+				switch c {
+				case '/':
+					ef += "/"
+				default:
+					// Escape name so the sql open call will be sanitized
+					ef += fmt.Sprintf("%%%x", c)
+				}
+			}
+			// Open command reference:  https://www.sqlite.org/c3ref/open.html
+			conn, err := sqlite3.Open("file:"+ef+"?mode=ro&nolock=1&immutable=1", sqlite3.OPEN_READONLY)
 			if err != nil {
 				panic(err)
 			}
@@ -132,7 +146,7 @@ func main() {
 					altMode = kml.AltitudeModeClampToGround
 				}
 				// Create a path if more than one point is specified
-				if len(entries) > 1 && !strings.HasSuffix(tbl_name, "OFINTERESTMO") {
+				if *event_bool && len(entries) > 1 && !strings.HasSuffix(tbl_name, "OFINTERESTMO") {
 					elements = append(elements,
 						kml.Placemark(
 							kml.Name("Path"),
@@ -217,7 +231,7 @@ func main() {
 							lcol := strings.ToLower(col)
 							if strings.HasSuffix(lcol, "date") {
 								switch {
-								case strings.HasSuffix(lcol, "creationdate"):
+								case strings.HasSuffix(lcol, "entrydate"):
 									idate_top = append(idate_top, i)
 								case strings.HasSuffix(lcol, "startdate"):
 									idate_top = append([]int{i}, idate_top...)
@@ -291,7 +305,7 @@ func main() {
 							ialt = append(ialt, i)
 						case strings.HasSuffix(lcol, "date"):
 							switch {
-							case strings.HasSuffix(lcol, "creationdate"):
+							case strings.HasSuffix(lcol, "entrydate"):
 								idate_top = append(idate_top, i)
 							case strings.HasSuffix(lcol, "startdate"):
 								idate_top = append([]int{i}, idate_top...)
@@ -342,25 +356,47 @@ func main() {
 						// Load the data into memory with a data_map for csv file and
 						// populate the description for the kml file
 						data_map := make(map[string]string)
+
+						{ // Store the file path in the csv output
+							data_map["SOURCE_FILE_PATH"] = f
+							all_clm_names = append(all_clm_names, "SOURCE_FILE_PATH")
+							all_clm_names_used["SOURCE_FILE_PATH"] = true
+						}
+
 						for icol, clm_name := range clm_names {
-							strB, _ := json.Marshal(data[icol])
-							desc += ",\n" + clm_name + ": " + string(strB)
-							if val, ok := data[icol].(float64); ok && strings.HasSuffix(strings.ToLower(clm_name), "date") {
-								v_sec, v_dec := math.Modf(val)
-								v_time := time.Unix(int64(v_sec)+978307200, int64(v_dec+1e9))
-								desc += fmt.Sprintf("(%s)", v_time)
-								if _, ok := data_map[clm_name]; !ok {
-									if dat, err := gocsv.MarshalString(v_time); err == nil {
-										data_map[clm_name] = dat
-									}
-								}
-							} else {
-								if _, ok := data_map[clm_name]; !ok {
-									if dat, err := gocsv.MarshalString(data[icol]); err == nil {
-										data_map[clm_name] = dat
-									}
-								}
+							if data[icol] == nil {
+								continue
 							}
+							if _, ok := data_map[clm_name]; ok {
+								// don't overwrite values, useful when two tables are left joined
+								continue
+							}
+							// ensure the column is exported in csv output
+							all_clm_names_used[clm_name] = true
+							var data_str, data_suffix string
+							switch val := data[icol].(type) {
+							case int:
+								data_str = fmt.Sprintf("%d", val)
+							case float64:
+								if strings.HasSuffix(strings.ToLower(clm_name), "date") ||
+									strings.HasSuffix(strings.ToLower(clm_name), "timestamp") {
+									v_sec, v_dec := math.Modf(val)
+									v_time := time.Unix(int64(v_sec)+978307200, int64(v_dec+1e9))
+									data_suffix = fmt.Sprintf(" (%s)", v_time)
+									data_map[clm_name+"_PARSED"] = v_time.Format("2006-01-02 15:04:05")
+								}
+								data_str = fmt.Sprintf("%f", val)
+							case string:
+								data_str = strconv.Quote(val)
+							default:
+								fmt.Printf("type: %T\n", val)
+								strB, _ := json.Marshal(val)
+								data_str = string(strB)
+							}
+							// put the value in the datamap
+							data_map[clm_name] = data_str
+							// put the value in the kml description blob
+							desc += ",\n" + clm_name + ": " + data_str + data_suffix
 						}
 
 						var kml_coord kml.Coordinate
@@ -371,7 +407,7 @@ func main() {
 							cur_time, _, _ = stmt.ColumnDouble(idate[0])
 							c_sec, c_dec := math.Modf(cur_time)
 							c_time = time.Unix(int64(c_sec)+978307200, int64(c_dec+1e9))
-							if len(entries) > 0 && c_time.Sub(entries[len(entries)-1].time) > *event {
+							if len(entries) > 0 && c_time.Sub(entries[len(entries)-1].time) > *event_time {
 								store_event()
 							}
 						}
@@ -479,6 +515,7 @@ func main() {
 			} else {
 				sqlfileFolders = tableFolders
 			}
+			tableFolders = []kml.Element{}
 		}()
 	}
 
@@ -501,16 +538,20 @@ func main() {
 	if csvf != nil {
 		co := bufio.NewWriter(csvf)
 		for i, clm_name := range all_clm_names {
+			if a, b := all_clm_names_used[clm_name]; !(a && b) {
+				continue
+			}
 			if i > 0 {
 				co.Write([]byte{','})
 			}
-			if dat, err := gocsv.MarshalBytes(clm_name); err == nil {
-				co.Write(dat)
-			}
+			fmt.Fprintf(co, "%q", clm_name)
 		}
 		co.Write([]byte{'\n'})
 		for _, e := range all_entries {
 			for i, clm_name := range all_clm_names {
+				if a, b := all_clm_names_used[clm_name]; !(a && b) {
+					continue
+				}
 				if i > 0 {
 					co.Write([]byte{','})
 				}
