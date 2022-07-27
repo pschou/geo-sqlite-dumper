@@ -163,9 +163,16 @@ func main() {
 				var pointElements []kml.Element
 				for _, entry := range entries {
 					if entry.coords != nil {
+						// Set the point title to the date
+						title := entry.time.Format(time.RFC3339Nano)
+						// If Z_PK exists, use that instead
+						if v, ok := entry.data["Z_PK"]; ok {
+							title = v
+						}
+
 						pointElements = append(pointElements,
 							kml.Placemark(
-								kml.Name(entry.time.Format(time.RFC3339Nano)),
+								kml.Name(title),
 								entry.desc,
 								kml.Point(kml.Coordinates(*entry.coords)),
 							),
