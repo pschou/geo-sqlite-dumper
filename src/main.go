@@ -402,7 +402,7 @@ func main() {
 								if strings.HasSuffix(strings.ToLower(clm_name), "date") ||
 									strings.HasSuffix(strings.ToLower(clm_name), "timestamp") {
 									v_sec, v_dec := math.Modf(val)
-									v_time := time.Unix(int64(v_sec)+978307200, int64(v_dec+1e9))
+									v_time := time.Unix(int64(v_sec)+978307200, int64(v_dec+1e9)).UTC()
 									data_suffix = fmt.Sprintf(" (%s)", v_time)
 									data_map[clm_name+"_PARSED"] = v_time.Format("2006-01-02 15:04:05")
 									if !contains(all_clm_names, clm_name+"_PARSED") {
@@ -435,7 +435,7 @@ func main() {
 						if len(idate) > 0 {
 							cur_time, _, _ = stmt.ColumnDouble(idate[0])
 							c_sec, c_dec := math.Modf(cur_time)
-							c_time = time.Unix(int64(c_sec)+978307200, int64(c_dec+1e9))
+							c_time = time.Unix(int64(c_sec)+978307200, int64(c_dec+1e9)).UTC()
 							if len(entries) > 0 && c_time.Sub(entries[len(entries)-1].time) > *event_time {
 								store_event()
 							}
