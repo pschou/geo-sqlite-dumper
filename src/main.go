@@ -129,7 +129,7 @@ func main() {
 			}
 
 			if err != nil {
-				fmt.Println("Make sure the file is in SQLite file format")
+				fmt.Println("Make sure the file is in SQLite file format.", err)
 				return
 				//panic(err)
 			}
