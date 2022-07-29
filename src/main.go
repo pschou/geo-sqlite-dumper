@@ -82,6 +82,26 @@ func main() {
 		func() {
 			// Anonymous function to make sure the defer close will work after every file
 			// is done processing
+
+			{
+				header := make([]byte, 16)
+				test, err := os.Open(f)
+				if err != nil {
+					log.Fatalf("Unable to open file %q, err: %s\n", f, err)
+				}
+				n, err := test.Read(header)
+				if err != nil {
+					log.Fatalf("Unable to read file %q, err: %s\n", f, err)
+				}
+				if n == 0 {
+					log.Fatalf("Empty file or unaable to read bytes in file %q\n", f)
+				}
+				if string(header) != "SQLite format 3\x00" {
+					log.Fatalf("Header of file is not in \"SQLite format 3\", %q\n", f)
+				}
+				test.Close()
+			}
+
 			ef := ""
 			for _, c := range []byte(f) {
 				switch c {
