@@ -44,6 +44,7 @@ func main() {
 	event_bool := params.Pres("E show-event-lines", "Show event lines for a series of points within event-time")
 	busy_timeout := params.Duration("timeout", 10*time.Second, "Busy timeout for SQLite calls", "TIME")
 	qry := params.String("q query", "", "Custom query for SQLite", "SQL")
+	file_list := params.String("list", "", "File with list of files to process, one line per file", "FILE")
 
 	params.GroupingSet("KML")
 	name := params.String("N name", "geo-sqlite-dumper", "Name to use for base KML folder", "TEXT")
@@ -72,13 +73,30 @@ func main() {
 		defer kmlf.Close()
 	}
 
+	list := params.Args()
+	if *file_list != "" {
+		fl, err := os.Open(*file_list)
+		if err != nil {
+			log.Fatalf("Error reading in list file %q, %s", *file_list, err)
+		}
+		scanner := bufio.NewScanner(fl)
+		scanner.Split(bufio.ScanLines)
+		for scanner.Scan() {
+			list = append(list, strings.TrimSpace(scanner.Text()))
+		}
+		fl.Close()
+	}
+
 	var sqlfileFolders []kml.Element
 	var all_clm_names []string
 	all_clm_names_used := make(map[string]bool)
 	var all_entries []*entry
 
 	// Loop over the file names and load them into the sqlfileFolders slice
-	for _, f := range params.Args() {
+	for _, f := range list {
+		if f == "" {
+			continue
+		}
 		func() {
 			// Anonymous function to make sure the defer close will work after every file
 			// is done processing
