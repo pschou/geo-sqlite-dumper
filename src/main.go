@@ -51,6 +51,7 @@ func main() {
 	kml_file := params.String("kml", "", "Export to KML file", "FILENAME")
 	params.GroupingSet("CSV")
 	csv_file := params.String("csv", "", "Export to CSV file", "FILENAME")
+	delimiter := params.String("delimiter", ",", "Delimiter for CSV output", "DELIM")
 	params.CommandLine.Indent = 2
 	params.Parse()
 
@@ -617,7 +618,7 @@ func main() {
 				continue
 			}
 			if i > 0 {
-				co.Write([]byte{','})
+				co.Write([]byte(*delimiter))
 			}
 			fmt.Fprintf(co, "%q", clm_name)
 		}
@@ -628,10 +629,10 @@ func main() {
 					continue
 				}
 				if i > 0 {
-					co.Write([]byte{','})
+					co.Write([]byte(*delimiter))
 				}
 				if edat, ok := e.data[clm_name]; ok {
-					co.Write([]byte(edat))
+					fmt.Fprintf(co, "%q", edat)
 				}
 			}
 			co.Write([]byte{'\n'})

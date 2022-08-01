@@ -9,22 +9,23 @@ Tool to convert geo sqlite files into KML / CSV files for plotting coordinates o
 $ ./geo-sqlite-dumper -h
 geo-sqlite-dumper - Tool to view the contents of a geo sqlite file (github.com/pschou/geo-sqlite-dumper)
 Apache 2.0 license, provided AS-IS -- not responsible for loss.
-Usage implies agreement.  Version: 0.1.20220729.1107
+Usage implies agreement.  Version: 0.1.20220801.1403
 
-Usage: ./geo-sqlite-dumper [options...] [files...]
+Usage: ../geo-sqlite-dumper [options...] [files...]
 
 Options:
-      --debug      Verbose output
+      --debug       Verbose output
   -e, --event-time TIME  Event qualifier, time between events to split on  (Default: 2h0m0s)
-      --list FILE  File with list of files to process, one line per file  (Default: "")
-  -q, --query SQL  Custom query for SQLite  (Default: "")
+      --list FILE   File with list of files to process, one line per file  (Default: "")
+  -q, --query SQL   Custom query for SQLite  (Default: "")
   -E, --show-event-lines  Show event lines for a series of points within event-time
       --timeout TIME  Busy timeout for SQLite calls  (Default: 10s)
 KML options:
       --kml FILENAME  Export to KML file  (Default: "")
-  -N, --name TEXT  Name to use for base KML folder  (Default: "geo-sqlite-dumper")
-CSV option:
+  -N, --name TEXT   Name to use for base KML folder  (Default: "geo-sqlite-dumper")
+CSV options:
       --csv FILENAME  Export to CSV file  (Default: "")
+      --delimiter DELIM  Delimiter for CSV output  (Default: ",")
 ```
 
 ## Example
