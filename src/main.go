@@ -658,6 +658,7 @@ func main() {
 			}
 			co.Write([]byte{'\n'})
 		}
+		co.Flush()
 	}
 	// Write out CSV
 	if *xlsx_file != "" {
