@@ -14,21 +14,20 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bvinc/go-sqlite-lite/sqlite3"
 	"github.com/pschou/go-params"
 	"github.com/twpayne/go-kml"
+	excelize "github.com/xuri/excelize/v2"
 )
 
-var debug *bool
+var debug, escape_ascii *bool
 var version = ""
 
 func main() {
@@ -42,6 +41,7 @@ func main() {
 	debug = params.Pres("debug", "Verbose output")
 	event_time := params.Duration("e event-time", 2*time.Hour, "Event qualifier, time between events to split on", "TIME")
 	event_bool := params.Pres("E show-event-lines", "Show event lines for a series of points within event-time")
+	force := params.Pres("force", "Ignore file/read errors and continue building output")
 	busy_timeout := params.Duration("timeout", 10*time.Second, "Busy timeout for SQLite calls", "TIME")
 	qry := params.String("q query", "", "Custom query for SQLite", "SQL")
 	file_list := params.String("list", "", "File with list of files to process, one line per file", "FILE")
@@ -50,10 +50,24 @@ func main() {
 	name := params.String("N name", "geo-sqlite-dumper", "Name to use for base KML folder", "TEXT")
 	kml_file := params.String("kml", "", "Export to KML file", "FILENAME")
 	params.GroupingSet("CSV")
+	escape_ascii = params.Bool("escape-ascii", false, "Escape non-ascii characters, useful for using tools that are not\n"+
+		"ascii safe/sanitizing special characters", "T/F")
 	csv_file := params.String("csv", "", "Export to CSV file", "FILENAME")
 	delimiter := params.String("delimiter", ",", "Delimiter for CSV output", "DELIM")
+	params.GroupingSet("XLSX")
+	xlsx_file := params.String("xlsx_file", "", "Export to XLSX file", "FILENAME")
+	xlsx_sheet := params.String("sheet", "geo-sqlite-dumper", "Sheet name to use in export", "NAME")
 	params.CommandLine.Indent = 2
 	params.Parse()
+
+	if *xlsx_file != "" {
+		var err error
+		xlsxf, err := os.Create(*xlsx_file)
+		if err != nil {
+			panic(err)
+		}
+		xlsxf.Close()
+	}
 
 	var csvf, kmlf *os.File
 	if *csv_file != "" {
@@ -106,16 +120,32 @@ func main() {
 				header := make([]byte, 16)
 				test, err := os.Open(f)
 				if err != nil {
+					if *force {
+						log.Printf("Warning: Unable to open file %q, err: %s\n", f, err)
+						return
+					}
 					log.Fatalf("Unable to open file %q, err: %s\n", f, err)
 				}
 				n, err := test.Read(header)
 				if err != nil {
+					if *force {
+						log.Printf("Warning: Unable to read file %q, err: %s\n", f, err)
+						return
+					}
 					log.Fatalf("Unable to read file %q, err: %s\n", f, err)
 				}
 				if n == 0 {
-					log.Fatalf("Empty file or unaable to read bytes in file %q\n", f)
+					if *force {
+						log.Printf("Warning: Empty file or unable to read bytes in file %q, err: %s\n", f, err)
+						return
+					}
+					log.Fatalf("Empty file or unable to read bytes in file %q\n", f)
 				}
 				if string(header) != "SQLite format 3\x00" {
+					if *force {
+						log.Printf("Warning: Header of file is not in \"SQLite format 3\", %q\n", f)
+						return
+					}
 					log.Fatalf("Header of file is not in \"SQLite format 3\", %q\n", f)
 				}
 				test.Close()
@@ -206,7 +236,7 @@ func main() {
 						title := entry.time.Format(time.RFC3339Nano)
 						// If Z_PK exists, use that instead
 						if v, ok := entry.data["Z_PK"]; ok {
-							title = v
+							title = fmt.Sprintf("%v", v)
 						}
 
 						pointElements = append(pointElements,
@@ -399,10 +429,10 @@ func main() {
 
 						// Load the data into memory with a data_map for csv file and
 						// populate the description for the kml file
-						data_map := make(map[string]string)
+						data_map := make(map[string]interface{})
 
 						{ // Store the file path in the csv output
-							data_map["SOURCE_FILE_PATH"] = fmt.Sprintf("%q", f)
+							data_map["SOURCE_FILE_PATH"] = f
 							if !contains(all_clm_names, "SOURCE_FILE_PATH") {
 								all_clm_names = append(all_clm_names, "SOURCE_FILE_PATH")
 								all_clm_names_used["SOURCE_FILE_PATH"] = true
@@ -410,7 +440,7 @@ func main() {
 						}
 
 						{ // Store the table name in the csv output
-							data_map["SOURCE_TABLE"] = fmt.Sprintf("%q", tbl_name)
+							data_map["SOURCE_TABLE"] = tbl_name
 							if !contains(all_clm_names, "SOURCE_TABLE") {
 								all_clm_names = append(all_clm_names, "SOURCE_TABLE")
 								all_clm_names_used["SOURCE_TABLE"] = true
@@ -433,10 +463,9 @@ func main() {
 							}
 							// ensure the column is exported in csv output
 							all_clm_names_used[clm_name] = true
-							var data_str, data_suffix string
+							var data_int interface{}
+							var data_suffix string
 							switch val := data[icol].(type) {
-							case int, int64:
-								data_str = fmt.Sprintf("%d", val)
 							case float64:
 								if strings.HasSuffix(strings.ToLower(clm_name), "date") ||
 									strings.HasSuffix(strings.ToLower(clm_name), "timestamp") {
@@ -449,22 +478,14 @@ func main() {
 										all_clm_names_used[clm_name+"_PARSED"] = true
 									}
 								}
-								data_str = fmt.Sprintf("%f", val)
-							case string:
-								data_str = strconv.Quote(val)
-							case []uint8:
-								data_str = strconv.Quote(string(val))
+								data_int = val
 							default:
-								if *debug {
-									fmt.Printf("%s type: %T %q\n", clm_name, val, val)
-								}
-								strB, _ := json.Marshal(val)
-								data_str = string(strB)
+								data_int = val
 							}
 							// put the value in the datamap
-							data_map[clm_name] = data_str
+							data_map[clm_name] = data_int
 							// put the value in the kml description blob
-							desc += ",\n" + clm_name + ": " + data_str + data_suffix
+							desc += ",\n" + clm_name + ": " + fmt.Sprintf("%v", data_int) + data_suffix
 						}
 
 						var kml_coord *kml.Coordinate
@@ -632,10 +653,57 @@ func main() {
 					co.Write([]byte(*delimiter))
 				}
 				if edat, ok := e.data[clm_name]; ok {
-					fmt.Fprintf(co, "%q", edat)
+					fmt.Fprintf(co, "%q", interface2string(edat))
 				}
 			}
 			co.Write([]byte{'\n'})
+		}
+	}
+	// Write out CSV
+	if *xlsx_file != "" {
+		xlsxf := excelize.NewFile()
+		xlsxf.SetDocProps(&excelize.DocProperties{
+			Category:       "data",
+			ContentStatus:  "Final",
+			Created:        time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+			Creator:        "GEO Sqlite Dumper " + version,
+			Description:    "This file was created by GEO Sqlite Dumper " + version + " (https://github.com/pschou/geo-sqlite-dumper)",
+			Identifier:     "xlsx",
+			Modified:       time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+			LastModifiedBy: "GEO Sqlite Dumper " + version,
+			Revision:       "0",
+			Subject:        "Conversion from an SQLite file to XLSX",
+			Title:          "GEO Sqlite Dumper",
+			Language:       "en-US",
+			Version:        "1.0.0",
+		})
+		defer func() {
+			if err := xlsxf.SaveAs(*xlsx_file); err != nil {
+				panic(err)
+			}
+		}()
+		sheet := xlsxf.NewSheet(*xlsx_sheet)
+		xlsxf.SetActiveSheet(sheet)
+		{ // Build the header row
+			c := 0
+			for _, clm_name := range all_clm_names {
+				if a, b := all_clm_names_used[clm_name]; a && b {
+					c++
+					cell, _ := excelize.CoordinatesToCellName(c, 1)
+					xlsxf.SetCellValue(*xlsx_sheet, cell, clm_name)
+				}
+			}
+		}
+		// Fill in the data
+		for r, e := range all_entries {
+			c := 0
+			for _, clm_name := range all_clm_names {
+				if a, b := all_clm_names_used[clm_name]; a && b {
+					c++
+					cell, _ := excelize.CoordinatesToCellName(c, r+2)
+					xlsxf.SetCellValue(*xlsx_sheet, cell, e.data[clm_name])
+				}
+			}
 		}
 	}
 }

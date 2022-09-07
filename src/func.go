@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/twpayne/go-kml"
@@ -29,7 +32,7 @@ func find(s []string, str string) (int, bool) {
 type entry struct {
 	coords *kml.Coordinate
 	desc   *kml.SimpleElement
-	data   map[string]string
+	data   map[string]interface{}
 	id     int
 	count  int
 	time   time.Time
@@ -81,3 +84,31 @@ topCountLoop:
 	}
 }
 */
+
+func interface2string(data interface{}) (data_str string) {
+	switch val := data.(type) {
+	case int, int64:
+		data_str = fmt.Sprintf("%d", val)
+	case float64:
+		data_str = fmt.Sprintf("%f", val)
+	case string:
+		if *escape_ascii {
+			data_str = strconv.QuoteToASCII(val)
+		} else {
+			data_str = strconv.Quote(val)
+		}
+	case []byte:
+		if *escape_ascii {
+			data_str = strconv.QuoteToASCII(string(val))
+		} else {
+			data_str = strconv.Quote(string(val))
+		}
+	default:
+		if *debug {
+			fmt.Printf("unknown type: %T %q\n", val, val)
+		}
+		strB, _ := json.Marshal(val)
+		data_str = string(strB)
+	}
+	return
+}
